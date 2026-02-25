@@ -1,0 +1,188 @@
+/* ============================================================
+   script.js — AI Translator — Client-side logic
+   ============================================================ */
+
+// ──────────────── DOM Elements ────────────────
+const sourceText     = document.getElementById('sourceText');
+const translatedText = document.getElementById('translatedText');
+const sourceLang     = document.getElementById('sourceLang');
+const targetLang     = document.getElementById('targetLang');
+const translateBtn   = document.getElementById('translateBtn');
+const btnText        = document.getElementById('btnText');
+const btnSpinner     = document.getElementById('btnSpinner');
+const clearBtn       = document.getElementById('clearBtn');
+const copyBtn        = document.getElementById('copyBtn');
+const speakBtn       = document.getElementById('speakBtn');
+const downloadBtn    = document.getElementById('downloadBtn');
+const swapBtn        = document.getElementById('swapBtn');
+const charCount      = document.getElementById('charCount');
+const detectedBadge  = document.getElementById('detectedBadge');
+const detectedLang   = document.getElementById('detectedLang');
+const historyList    = document.getElementById('historyList');
+const clearHistoryBtn= document.getElementById('clearHistoryBtn');
+
+// ──────────────── Translate ────────────────
+translateBtn.addEventListener('click', doTranslate);
+
+// Also translate on Ctrl+Enter
+sourceText.addEventListener('keydown', e => {
+    if (e.ctrlKey && e.key === 'Enter') doTranslate();
+});
+
+async function doTranslate() {
+    const text = sourceText.value.trim();
+    if (!text) return;
+
+    // Show loading state
+    btnText.classList.add('d-none');
+    btnSpinner.classList.remove('d-none');
+    translateBtn.disabled = true;
+    translatedText.value = '';
+    detectedBadge.style.display = 'none';
+
+    try {
+        const res = await fetch('/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text:   text,
+                source: sourceLang.value,
+                target: targetLang.value
+            })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            translatedText.value = data.translated_text;
+            translatedText.classList.add('fade-in');
+            setTimeout(() => translatedText.classList.remove('fade-in'), 600);
+
+            // Show detected language badge
+            if (sourceLang.value === 'auto' && data.detected_language) {
+                detectedLang.textContent = data.detected_language.toUpperCase();
+                detectedBadge.style.display = 'block';
+            }
+
+            // Refresh history
+            loadHistory();
+        } else {
+            translatedText.value = '⚠️ ' + (data.error || 'Translation failed.');
+        }
+    } catch (err) {
+        translatedText.value = '⚠️ Network error. Is the server running?';
+    } finally {
+        btnText.classList.remove('d-none');
+        btnSpinner.classList.add('d-none');
+        translateBtn.disabled = false;
+    }
+}
+
+// ──────────────── Character Count ────────────────
+sourceText.addEventListener('input', () => {
+    const len = sourceText.value.length;
+    charCount.textContent = `${len} / 5000`;
+    if (len > 5000) charCount.style.color = '#ef4444';
+    else charCount.style.color = '#555';
+});
+
+// ──────────────── Clear Input ────────────────
+clearBtn.addEventListener('click', () => {
+    sourceText.value = '';
+    translatedText.value = '';
+    charCount.textContent = '0 / 5000';
+    detectedBadge.style.display = 'none';
+    sourceText.focus();
+});
+
+// ──────────────── Swap Languages ────────────────
+swapBtn.addEventListener('click', () => {
+    if (sourceLang.value === 'auto') return; // can't swap auto
+    const tmp = sourceLang.value;
+    sourceLang.value = targetLang.value;
+    targetLang.value = tmp;
+
+    // Also swap text areas
+    const tmpText = sourceText.value;
+    sourceText.value = translatedText.value;
+    translatedText.value = tmpText;
+});
+
+// ──────────────── Copy to Clipboard ────────────────
+copyBtn.addEventListener('click', () => {
+    const text = translatedText.value.trim();
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => showToast('Copied to clipboard!'));
+});
+
+function showToast(msg) {
+    const el = document.createElement('div');
+    el.className = 'toast-copied';
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2000);
+}
+
+// ──────────────── Text-to-Speech ────────────────
+speakBtn.addEventListener('click', () => {
+    const text = translatedText.value.trim();
+    if (!text) return;
+    if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = targetLang.value;
+    utterance.rate = 0.95;
+    window.speechSynthesis.speak(utterance);
+});
+
+// ──────────────── Download as TXT ────────────────
+downloadBtn.addEventListener('click', () => {
+    const text = translatedText.value.trim();
+    if (!text) return;
+    const blob = new Blob(
+        [`Source (${sourceLang.value}):\n${sourceText.value}\n\nTranslation (${targetLang.value}):\n${text}`],
+        { type: 'text/plain' }
+    );
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'translation.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+});
+
+// ──────────────── History ────────────────
+async function loadHistory() {
+    try {
+        const res = await fetch('/history');
+        const data = await res.json();
+        if (!data.length) {
+            historyList.innerHTML = '<p class="text-muted text-center">No translations yet.</p>';
+            return;
+        }
+        historyList.innerHTML = data.map(item => `
+            <div class="history-item">
+                <div class="src-text">${escapeHtml(item.source_text)}</div>
+                <div class="trans-text">${escapeHtml(item.translated)}</div>
+                <div class="meta">${item.source_lang} → ${item.target_lang} &bull; ${item.created_at}</div>
+            </div>
+        `).join('');
+    } catch(e) {
+        /* silent */
+    }
+}
+
+clearHistoryBtn.addEventListener('click', async () => {
+    await fetch('/clear-history', { method: 'POST' });
+    historyList.innerHTML = '<p class="text-muted text-center">No translations yet.</p>';
+});
+
+// Escape HTML to prevent XSS
+function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
+// Load history on page load
+loadHistory();
